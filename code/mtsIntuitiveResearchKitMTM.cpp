@@ -86,12 +86,28 @@ void mtsIntuitiveResearchKitMTM::Init(void)
 
     // Main interface should have been created by base class init
     CMN_ASSERT(RobotInterface);
-    RobotInterface->AddCommandWrite(&mtsIntuitiveResearchKitMTM::SetWrench, this, "SetWrench");
-
     // Gripper
     RobotInterface->AddCommandReadState(this->StateTable, GripperPosition, "GetGripperPosition");
     RobotInterface->AddEventVoid(GripperEvents.GripperPinch, "GripperPinchEvent");
     RobotInterface->AddEventWrite(GripperEvents.GripperClosed, "GripperClosedEvent", true);
+    RobotInterface->AddCommandWrite(&mtsIntuitiveResearchKitMTM::DesiredOrientation, this, "DesiredOrientation");
+    RobotInterface->AddCommandWrite(&mtsIntuitiveResearchKitMTM::EnableRPYPID, this, "EnableRPYPID");
+
+}
+
+void mtsIntuitiveResearchKitMTM::EnableRPYPID(const bool& enable)
+{
+    // enable/disable PID on last joints 
+    if(RobotState == mtsIntuitiveResearchKitArmTypes::DVRK_GRAVITY_COMPENSATION ){
+        vctBoolVec torqueMode(8);
+        torqueMode.SetAll(true);
+        if( enable ){
+            torqueMode[4] = false;
+            torqueMode[5] = false;
+            torqueMode[6] = false;
+        }
+        PID.EnableTorqueMode(torqueMode);
+    }
 }
 
 void mtsIntuitiveResearchKitMTM::RunArmSpecific(void)
@@ -150,6 +166,47 @@ void mtsIntuitiveResearchKitMTM::GetRobotData(void)
             GripperEvents.GripperPinch.Execute();
         }
     }
+}
+
+vct3 SO3toRPY( const vctMatrixRotation3<double>& R )
+{
+
+    vct3 rpy;
+    if( fabs(R[2][2]) < 1e-12 && fabs(R[1][2]) < 1e-12 ){
+        rpy[0] = 0;
+        rpy[1] = atan2( R[0][2], R[2][2] );
+        rpy[2] = atan2( R[1][0], R[1][1] );
+    }
+    else{
+        rpy[0] = atan2( -R[1][2], R[2][2] );
+        double sr = sin( rpy[0] );
+        double cr = cos( rpy[0] );
+        rpy[1] = atan2(  R[0][2], cr*R[2][2] - sr*R[1][2] );
+        rpy[2] = atan2( -R[0][1], R[0][0] );
+    }
+
+    return rpy;
+}
+
+void mtsIntuitiveResearchKitMTM::DesiredOrientation(const vctMatRot3& R07s)
+{
+    vctDynamicVector<double> q = JointGet;
+    
+    // current orientations
+    vctMatrixRotation3<double> R04( Manipulator.ForwardKinematics( q, 4 ).Rotation() );
+    vctMatrixRotation3<double> R07( Manipulator.ForwardKinematics( q, 7 ).Rotation() );
+    
+    vctMatrixRotation3<double> R47s( R04.Transpose() * R07s );
+    vctMatrixRotation3<double> R47(  R04.Transpose() * R07 );
+    
+    vct3 rpys = SO3toRPY( R47s );
+    vct3 rpy = SO3toRPY( R47 );
+    
+    vct3 e = rpys - rpy;
+    q[4] += e[1];
+    q[5] -= e[0];
+    q[6] += e[2];
+    SetPositionJointLocal( q );
 }
 
 void mtsIntuitiveResearchKitMTM::SetState(const mtsIntuitiveResearchKitArmTypes::RobotStateType & newState)
@@ -537,57 +594,6 @@ void mtsIntuitiveResearchKitMTM::RunClutch(void)
     JointSet[6] = JointSet[6] + differenceInTurns * 2.0 * cmnPI;
 
     SetPositionJointLocal(JointSet);
-}
-
-void mtsIntuitiveResearchKitMTM::SetWrench(const prmForceCartesianSet & newForce)
-{
-
-    if (RobotState == mtsIntuitiveResearchKitArmTypes::DVRK_POSITION_CARTESIAN) {
-
-        vctDoubleVec jointDesired( 7, 0.0 );
-        for ( size_t i=0; i<jointDesired.size(); i++ )
-            { jointDesired[i] = JointGet[i]; }
-
-        Manipulator.JacobianBody( jointDesired );
-        vctDynamicMatrix<double> J( 6, Manipulator.links.size(), VCT_COL_MAJOR );
-        for( size_t r=0; r<6; r++ ){
-            for( size_t c=0; c<Manipulator.links.size(); c++ ){
-                J[r][c] = Manipulator.Jn[c][r];
-            }
-        }
-
-        prmForceCartesianSet tmp = newForce;
-        prmForceCartesianSet::ForceType tmpft;
-        tmp.GetForce( tmpft );
-        vctDynamicMatrix<double> ft( tmpft.size(), 1, 0.0, VCT_COL_MAJOR );
-        for( size_t i=0; i<ft.size(); i++ )
-            { ft[i][0] = tmpft[i]; }
-        vctDynamicMatrix<double> t = nmrLSMinNorm( J, ft );
-
-
-        vctDoubleVec torqueDesired(8, 0.0);
-        for( size_t i=0; i<3; i++ )
-            { torqueDesired[i] = t[i][0]; }
-
-        if( torqueDesired[0] < -2.0 ) { torqueDesired[0] = -2.0; }
-        if( 2.0 < torqueDesired[0]  ) { torqueDesired[0] =  2.0; }
-        if( torqueDesired[1] < -2.0 ) { torqueDesired[1] = -2.0; }
-        if( 2.0 < torqueDesired[1]  ) { torqueDesired[1] =  2.0; }
-        if( torqueDesired[2] < -2.0 ) { torqueDesired[2] = -2.0; }
-        if( 2.0 < torqueDesired[2]  ) { torqueDesired[2] =  2.0; }
-
-        if( torqueDesired[3] < -1.0 ) { torqueDesired[3] = -0.05; }
-        if( 1.0 < torqueDesired[3]  ) { torqueDesired[3] =  0.05; }
-        if( torqueDesired[4] < -1.0 ) { torqueDesired[4] = -0.05; }
-        if( 1.0 < torqueDesired[4]  ) { torqueDesired[4] =  0.05; }
-        if( torqueDesired[5] < -1.0 ) { torqueDesired[5] = -0.05; }
-        if( 1.0 < torqueDesired[5]  ) { torqueDesired[5] =  0.05; }
-        if( torqueDesired[6] < -1.0 ) { torqueDesired[6] = -0.05; }
-        if( 1.0 < torqueDesired[6]  ) { torqueDesired[6] =  0.05; }
-
-        TorqueSet.SetForceTorque(torqueDesired);
-        PID.SetTorqueJoint(TorqueSet);
-    }
 }
 
 void mtsIntuitiveResearchKitMTM::SetRobotControlState(const std::string & state)

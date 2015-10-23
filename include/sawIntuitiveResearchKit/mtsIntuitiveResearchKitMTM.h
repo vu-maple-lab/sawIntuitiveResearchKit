@@ -21,6 +21,7 @@ http://www.cisst.org/cisst/license.txt.
 #define _mtsIntuitiveResearchKitMTM_h
 
 #include <cisstParameterTypes/prmForceTorqueJointSet.h>
+#include <cisstParameterTypes/prmEventButton.h>
 #include <sawIntuitiveResearchKit/mtsIntuitiveResearchKitArm.h>
 
 class mtsIntuitiveResearchKitMTM: public mtsIntuitiveResearchKitArm
@@ -81,6 +82,7 @@ protected:
 
     virtual void Init(void);
 
+
     /*! Get data specific to the MTM (gripper angle using analog inputs) after
       calling mtsIntuitiveResearchKitArm::GetRobotData. */
     void GetRobotData(void);
@@ -106,13 +108,15 @@ protected:
     /*! Run Clutch */
     void RunClutch(void);
 
-    virtual void SetWrench(const prmForceCartesianSet & newForce);  // NOTE: in body frame
-
     // Functions for events
     struct {
         mtsFunctionVoid GripperPinch;
         mtsFunctionWrite GripperClosed;
     } GripperEvents;
+
+    void DesiredOrientation(const vctMatRot3& Rs);
+    void EnableRPYPID(const bool& enable);
+
 
     //! robot cartesian position when cluthed
     vctFrm4x4 CartesianClutched;
